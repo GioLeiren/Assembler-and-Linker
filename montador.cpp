@@ -2,14 +2,17 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <sstream>
 
 // Tabelas globais
 std::map<std::string, int> symbolTable;
 std::vector<std::string> programLines;
+std::map<std::string, std::pair<int, std::vector<std::string>>> MNT; // Nome -> <Posição na MDT, Nº de argumentos>
+std::vector<std::vector<std::string>> MDT;     // Corpo das macros, armazenado linha por linha
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cerr << "Uso: ./montador -o input.asm\n";
+        std::cerr << "Uso: ./montador -o input.asm (linux) ou montador.exe -o input.asm (windows)\n";
         return 1;
     }
 
@@ -44,84 +47,178 @@ bool isValidNumber(const std::string& str) {
     return std::all_of(str.begin() + start, str.end(), ::isdigit);
 }
 
+std::vector<std::string> splitString(const std::string& input) {
+    std::vector<std::string> result;
+    std::stringstream ss(input);
+    std::string item;
+
+    while (std::getline(ss, item, ',')) {
+        result.push_back(item);
+    }
+
+    return result;
+}
+
 void preprocess(const std::string& inputFile, const std::string& outputFile) {
     std::ifstream input(inputFile);
     std::ofstream output(outputFile);
-
+    
     if (!input.is_open()) {
-        std::cerr << "Erro ao abrir o arquivo de entrada: " << inputFile << "\n";
+        std::cerr << "Error opening input file: " << inputFile << "\n";
         return;
     }
 
     if (!output.is_open()) {
-        std::cerr << "Erro ao criar o arquivo de saída: " << outputFile << "\n";
+        std::cerr << "Error creating output file: " << outputFile << "\n";
         return;
     }
 
-    std::map<std::string, int> equTable; // Para armazenar rótulos definidos por EQU
     std::string line;
-    bool ignoreLine = false;
+    bool inMacroDefinition = false;
+    std::string currentMacroName;
+    std::vector<std::string> currentMacroArgs;
+    int mdtIndex = 0;
 
     while (std::getline(input, line)) {
-        // Remover comentários (; e tudo depois dele)
+        // Remove comments
         size_t commentPos = line.find(';');
         if (commentPos != std::string::npos) {
             line = line.substr(0, commentPos);
         }
 
-        // Normalizar espaços e tabulações
-        line.erase(remove_if(line.begin(), line.end(), isspace), line.end());
+        // Trim leading and trailing whitespace
+        line.erase(0, line.find_first_not_of(" \t"));
+        line.erase(line.find_last_not_of(" \t") + 1);
 
-        // Ignorar linhas vazias após limpeza
+        // Skip empty lines
         if (line.empty()) continue;
 
-        // Processar diretivas EQU
-        if (line.find("EQU") != std::string::npos) {
-            size_t labelEnd = line.find(":");
-            size_t directiveEnd = line.find("EQU");
-            std::cerr << "labelEnd: " << labelEnd << "\n";
-            std::string label = line.substr(0, labelEnd);
-            std::cerr << "label: " << label << "\n";
-            std::string value = line.substr(directiveEnd + 3);
-            std::cerr << "value " << value << "\n";
+        // Check for macro definition start
+        if (line.find("MACRO") != std::string::npos && 
+            line.find("ENDMACRO") == std::string::npos) {
+            // Parse macro name and arguments
+            size_t macroPos = line.find(':');
+            if (macroPos != std::string::npos) {
+                currentMacroName = line.substr(0, macroPos);
+                
+                // Extract arguments
+                std::string argsStr = line.substr(macroPos + 7); // After " MACRO"
+                std::istringstream argStream(argsStr);
+                std::string arg;
+                currentMacroArgs.clear();
 
-            // Validar o valor antes de tentar convertê-lo
-            if (!isValidNumber(value)) {
-                std::cerr << "Erro: Valor inválido na diretiva EQU: " << value << "\n";
-                return;
+                while (std::getline(argStream, arg, ',')) {
+                    // Trim whitespace from argument
+                    arg.erase(0, arg.find_first_not_of(" \t"));
+                    arg.erase(arg.find_last_not_of(" \t") + 1);
+                    if (!arg.empty()) {
+                        currentMacroArgs.push_back(arg);
+                    }
+                }
+
+                // Store macro info in MNT
+                MNT[currentMacroName] = {mdtIndex, currentMacroArgs};
+                inMacroDefinition = true;
+                continue;
+            }
+        }
+
+        // Store macro body in MDT
+        if (inMacroDefinition) {
+            // Check for macro definition end
+            if (line.find("ENDMACRO") != std::string::npos) {
+                inMacroDefinition = false;
+                continue;
             }
 
-            equTable[label] = stoi(value); // Converte valor para inteiro
+            // Replace formal arguments with placeholders
+            std::vector<std::string> processedLine;
+            std::istringstream iss(line);
+            std::string token;
+            std::vector<std::string> lineTokens;
+
+            // First, collect all tokens
+            while (iss >> token) {
+                size_t tokenComma = token.find(',');
+                token = token.substr(0, tokenComma);
+
+                lineTokens.push_back(token);
+            }
+
+            // Process each token
+            for (const auto& tok : lineTokens) {
+                bool replaced = false;
+                for (size_t i = 0; i < currentMacroArgs.size(); ++i) {
+                    if (tok == currentMacroArgs[i]) {
+                        processedLine.push_back("#" + std::to_string(i + 1));
+                        replaced = true;
+                        break;
+                    }
+                }
+                
+                if (!replaced) {
+                    processedLine.push_back(tok);
+                }
+            }
+
+            MDT.push_back(processedLine);
+            mdtIndex++;
             continue;
         }
 
-        // Substituir rótulos definidos por EQU
-        for (const auto& [label, value] : equTable) {
-            size_t pos;
-            while ((pos = line.find(label)) != std::string::npos) {
-                line.replace(pos, label.length(), std::to_string(value));
+        // Check for macro invocation
+        bool macroExpanded = false;
+        for (const auto& [macroName, macroInfo] : MNT) {
+            if (line.find(macroName) != std::string::npos) {
+                // Extract macro arguments
+                std::vector<std::string> actualArgs;
+                size_t macroPos = line.find(macroName);
+                std::string argsStr = line.substr(macroPos + macroName.length());
+                std::istringstream argStream(argsStr);
+                std::string arg;
+
+                while (std::getline(argStream, arg, ',')) {
+                    // Trim whitespace from argument
+                    arg.erase(0, arg.find_first_not_of(" \t"));
+                    arg.erase(arg.find_last_not_of(" \t") + 1);
+                    if (!arg.empty()) {
+                        actualArgs.push_back(arg);
+                    }
+                }
+
+                // Verify argument count
+                if (actualArgs.size() != macroInfo.second.size()) {
+                    std::cerr << "Error: Incorrect number of arguments for macro " << macroName << "\n";
+                    continue;
+                }
+
+                // Expand macro
+                int macroStart = macroInfo.first;
+                for (int i = macroStart; i < (int)MDT.size(); ++i) {
+                    std::ostringstream expandedLine;
+                    for (const auto& token : MDT[i]) {
+                        if (token[0] == '#' && std::isdigit(token[1])) {
+                            int argIndex = std::stoi(token.substr(1)) - 1;
+                            expandedLine << actualArgs[argIndex] << " ";
+                        } else {
+                            expandedLine << token << " ";
+                        }
+                    }
+                    line = expandedLine.str();
+                    line.erase(remove_if(line.begin(), line.end(), isspace), line.end());
+                    output << line << "\n";
+                }
+
+                macroExpanded = true;
+                break;
             }
         }
 
-        // Processar diretivas IF
-        if (line.find("IF") != std::string::npos) {
-            size_t ifPos = line.find("IF");
-            std::string condition = line.substr(ifPos + 2);
-            std::cerr << "condition: " << condition << "\n";
-            ignoreLine = (stoi(condition) == 0);
-            std::cerr << "ignoreLine: " << ignoreLine << "\n";
-            
-            continue;
+        // Write non-macro lines to output
+        if (!macroExpanded && !inMacroDefinition) {
+            line.erase(remove_if(line.begin(), line.end(), isspace), line.end());
+            output << line << "\n";
         }
-
-        // Ignorar linhas condicionais não atendidas
-        if (ignoreLine) {
-            ignoreLine = false;
-            continue;
-        }
-
-        // Escrever a linha pré-processada no arquivo de saída
-        output << line << "\n";
     }
 
     input.close();
@@ -166,7 +263,57 @@ void firstPass(const std::string& inputFile) {
 
         // Atualizar o contador de localização
         // Assumimos que cada instrução ou diretiva ocupa 1 unidade de memória (ajuste conforme necessário)
-        locationCounter++;
+        if (line.find("SPACE") != std::string::npos) {
+            size_t spacePos = line.find("SPACE");
+            std::string spaceAlloc = line.substr(spacePos + 5);
+            std::cerr << "spaceAlloc: " << spaceAlloc << "\n";
+            locationCounter += stoi(spaceAlloc);
+        }
+        else if (line.find("STOP") != std::string::npos) {
+            locationCounter++;
+        }
+        else if (line.find("CONST") != std::string::npos) {
+            locationCounter++;
+        }
+        else if (line.find("INPUT") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("OUTPUT") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("LOAD") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("STORE") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("ADD") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("SUB") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("MUL") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("DIV") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("JMP") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("JMPN") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("JMPP") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("JMPZ") != std::string::npos) {
+            locationCounter += 2;
+        }
+        else if (line.find("COPY") != std::string::npos) {
+            locationCounter += 3;
+        }
     }
 
     file.close();
