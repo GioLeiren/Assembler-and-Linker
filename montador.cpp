@@ -1,4 +1,5 @@
 #include "montador.hpp"
+#include <iomanip>
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -217,6 +218,7 @@ void preprocess(const std::string& inputFile, const std::string& outputFile) {
         // Write non-macro lines to output
         if (!macroExpanded && !inMacroDefinition) {
             line.erase(remove_if(line.begin(), line.end(), isspace), line.end());
+            line.erase(std::remove(line.begin(), line.end(), ','), line.end());
             output << line << "\n";
         }
     }
@@ -233,6 +235,7 @@ void firstPass(const std::string& inputFile) {
     }
 
     int locationCounter = 0; // Contador de localização para rastrear endereços
+    int currentLine = 1; // Contador de linhas para indicar erros
     std::string line;
 
     while (std::getline(file, line)) {
@@ -247,7 +250,7 @@ void firstPass(const std::string& inputFile) {
 
             // Verificar se o rótulo já existe
             if (symbolTable.find(label) != symbolTable.end()) {
-                std::cerr << "Erro: Rótulo '" << label << "' redefinido na linha: " << line << "\n";
+                std::cerr << "Rótulo '" << label << "' redefinido na linha: " << currentLine << "\n";
                 return;
             }
 
@@ -262,56 +265,62 @@ void firstPass(const std::string& inputFile) {
         programLines.push_back(line);
 
         // Atualizar o contador de localização
-        // Assumimos que cada instrução ou diretiva ocupa 1 unidade de memória (ajuste conforme necessário)
+        // Assumimos que cada instrução ou diretiva ocupa 1 unidade de memória
         if (line.find("SPACE") != std::string::npos) {
+            currentLine++;
             size_t spacePos = line.find("SPACE");
             std::string spaceAlloc = line.substr(spacePos + 5);
-            std::cerr << "spaceAlloc: " << spaceAlloc << "\n";
+            if (spaceAlloc != "")
             locationCounter += stoi(spaceAlloc);
+            else
+            locationCounter++;
         }
         else if (line.find("STOP") != std::string::npos) {
+            currentLine++;
             locationCounter++;
         }
         else if (line.find("CONST") != std::string::npos) {
+            currentLine++;
             locationCounter++;
         }
         else if (line.find("INPUT") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("OUTPUT") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("LOAD") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("STORE") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("ADD") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("SUB") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("MUL") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("DIV") != std::string::npos) {
+            currentLine++;
             locationCounter += 2;
         }
-        else if (line.find("JMP") != std::string::npos) {
-            locationCounter += 2;
-        }
-        else if (line.find("JMPN") != std::string::npos) {
-            locationCounter += 2;
-        }
-        else if (line.find("JMPP") != std::string::npos) {
-            locationCounter += 2;
-        }
-        else if (line.find("JMPZ") != std::string::npos) {
+        else if (line.find("JMP") != std::string::npos) {   // JMPN, JMPP e JMPZ estão inclusos
+            currentLine++;
             locationCounter += 2;
         }
         else if (line.find("COPY") != std::string::npos) {
+            currentLine++;
             locationCounter += 3;
         }
     }
@@ -325,18 +334,72 @@ void firstPass(const std::string& inputFile) {
     }
 }
 
-std::string translateToMachineCode(const std::string& line) {
-    // Implementação simplificada para traduzir linhas para código de máquina
-    if (line.find("MOV") != std::string::npos) {
-        return "01";
-    } else if (line.find("ADD") != std::string::npos) {
-        return "02";
-    } else if (line.find("SUB") != std::string::npos) {
-        return "03";
-    } else if (line.find("JNZ") != std::string::npos) {
-        return "04";
+std::string replaceWithAddress(const std::string& line) {
+    std::string processedLine = line; // Copiar a linha para processar
+    // Substituir rótulos pelos endereços na tabela de símbolos
+    for (const auto& [label, address] : symbolTable) {
+        size_t pos;
+        while ((pos = processedLine.find(label)) != std::string::npos) {
+            processedLine.replace(pos, label.length(), std::to_string(address));
+        }
     }
-    return "";
+    
+    return processedLine;
+}
+
+std::string translateToMachineCode(const std::string& line) {
+    std::string translation = "";
+    // Implementação simplificada para traduzir linhas para código de máquina
+    if (line.find("SPACE") != std::string::npos) {
+        translation += "00";
+    } else if (line.find("ADD") != std::string::npos) {
+        translation += "01 ";
+        translation += replaceWithAddress(line.substr(3));
+    } else if (line.find("SUB") != std::string::npos) {
+        translation += "02 ";
+        translation += replaceWithAddress(line.substr(3));
+    } else if (line.find("MUL") != std::string::npos) {
+       translation += "03 ";
+       translation += replaceWithAddress(line.substr(3));
+    } else if (line.find("DIV") != std::string::npos) {
+        translation += "04 ";
+        translation += replaceWithAddress(line.substr(3));
+    } else if (line.find("JMPN") != std::string::npos) {
+        translation += "06 ";
+        translation += replaceWithAddress(line.substr(4));
+    } else if (line.find("JMPP") != std::string::npos) {
+        translation += "07 ";
+        translation += replaceWithAddress(line.substr(4));
+    } else if (line.find("JMPZ") != std::string::npos) {
+        translation += "08 ";
+        translation += replaceWithAddress(line.substr(4));
+    } else if (line.find("JMP") != std::string::npos) {
+        translation += "05 ";
+        translation += replaceWithAddress(line.substr(3));
+    } else if (line.find("COPY") != std::string::npos) {
+        translation += "09 ";
+        std::string auxStr = replaceWithAddress(line.substr(4));
+        translation += auxStr.substr(0, 2);
+        translation += " ";
+        translation += auxStr.substr(2, 2);
+    } else if (line.find("LOAD") != std::string::npos) {
+        translation += "10 ";
+        translation += replaceWithAddress(line.substr(4));
+    } else if (line.find("STORE") != std::string::npos) {
+        translation += "11 ";
+        translation += replaceWithAddress(line.substr(5));
+    } else if (line.find("INPUT") != std::string::npos) {
+        translation += "12 ";
+        translation += replaceWithAddress(line.substr(5));
+    } else if (line.find("OUTPUT") != std::string::npos) {
+        translation += "13 ";
+        translation += replaceWithAddress(line.substr(6));
+    } else if (line.find("STOP") != std::string::npos) {
+        translation += "14";
+    }
+
+
+    return translation;
 }
 
 void secondPass(const std::string& outputFile) {
@@ -347,20 +410,11 @@ void secondPass(const std::string& outputFile) {
     }
 
     for (const auto& line : programLines) {
-        std::string processedLine = line; // Copiar a linha para processar
         std::string outputCode;          // Código gerado para a linha
-
-        // Substituir rótulos pelos endereços na tabela de símbolos
-        for (const auto& [label, address] : symbolTable) {
-            size_t pos;
-            while ((pos = processedLine.find(label)) != std::string::npos) {
-                processedLine.replace(pos, label.length(), std::to_string(address));
-            }
-        }
 
         // Gerar código de máquina para a linha
         // Exemplo simplificado: aqui você deve implementar a lógica real de tradução
-        outputCode = translateToMachineCode(processedLine);
+        outputCode = translateToMachineCode(line);
 
         // Escrever o código gerado no arquivo
         if (!outputCode.empty()) {
